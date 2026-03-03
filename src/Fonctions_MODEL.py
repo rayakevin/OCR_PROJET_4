@@ -2,9 +2,23 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-from sklearn.model_selection import train_test_split, KFold
-from sklearn.metrics import r2_score, mean_absolute_percentage_error, mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
+from sklearn.metrics import (
+    r2_score,
+    mean_absolute_percentage_error,
+    mean_absolute_error,
+    mean_squared_error,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+)
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 from category_encoders import BinaryEncoder
 
@@ -251,52 +265,209 @@ def evaluate_regression_model_cv(model, X, y, cv):
     return metrics
 
 
-def print_cv_results(models, X, y, cv=5):
+def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,show_confusion_matrix=True,cmap="Blues",):
     """
-    Affiche les résultats de validation croisée pour un ensemble de modèles.
+    Évalue un modèle de classification à l'aide d'une validation croisée stratifiée.
 
-    La fonction évalue chaque modèle du dictionnaire fourni avec
-    `evaluate_regression_model_cv`, puis affiche un résumé formaté
-    des métriques moyennes sur les jeux d'entraînement et de test.
+    La fonction réalise une validation croisée `StratifiedKFold`, entraîne le
+    modèle sur chaque fold d'entraînement, puis calcule plusieurs métriques de
+    classification sur les jeux d'entraînement et de validation. Elle agrège
+    également les prédictions de validation (out-of-fold) afin de produire une
+    matrice de confusion représentative sur l'ensemble du jeu fourni, sans
+    utiliser un jeu de test final mis de côté.
 
     Paramètres
     ----------
-    models : dict
-        Dictionnaire associant un nom de modèle à un estimateur.
-        Exemple :
-        {"Linear Regression": model_1, "Random Forest": model_2}
+    model : estimator object
+        Modèle de classification implémentant les méthodes `fit(X, y)` et
+        `predict(X)`. Si le modèle expose `predict_proba(X)` ou
+        `decision_function(X)`, un score ROC AUC est également calculé.
     X : pd.DataFrame
-        Matrice des variables explicatives transmise à la fonction d'évaluation.
+        Matrice des variables explicatives. La fonction utilise `.iloc`,
+        un DataFrame pandas est donc attendu.
     y : pd.Series
-        Vecteur cible transmis à la fonction d'évaluation.
-    cv : int, default=5
+        Vecteur cible. La fonction utilise `.iloc`,
+        une Series pandas est donc attendue.
+    cv : int
         Nombre de folds utilisés pour la validation croisée.
+    stratify : bool, default=True
+        Si `True`, utilise `StratifiedKFold` pour préserver la distribution
+        des classes dans chaque fold. Si `False`, utilise `KFold`.
+    model_name : str | None, default=None
+        Nom du modèle à afficher dans la sortie console. Si `None`, seul le
+        résumé des métriques est affiché.
+    show_confusion_matrix : bool, default=True
+        Si `True`, affiche la matrice de confusion agrégée à partir des
+        prédictions out-of-fold.
+    cmap : str, default="Blues"
+        Palette de couleurs utilisée pour la matrice de confusion.
 
     Retours
     -------
-    None
-        La fonction n'a pas de valeur de retour.
-        Elle affiche simplement les résultats dans la console.
+    dict
+        Dictionnaire contenant la moyenne des métriques d'entraînement et de
+        validation sur l'ensemble des folds :
+        - "Train Accuracy"
+        - "Test Accuracy"
+        - "Train Precision"
+        - "Test Precision"
+        - "Train Recall"
+        - "Test Recall"
+        - "Train F1"
+        - "Test F1"
+        - "Train ROC AUC"
+        - "Test ROC AUC"
 
     Notes
     -----
-    - Les métriques affichées sont : R2, MAPE, MAE et RMSE.
-    - Cette fonction est pensée comme un utilitaire de comparaison rapide,
-      notamment dans un notebook.
+    - Si `stratify=True`, la validation préserve la distribution des classes
+      dans chaque fold.
+    - Les métriques `Precision`, `Recall` et `F1` sont calculées avec`zero_division=0` pour éviter les erreurs en cas de classe non prédite.
+    - Le score `ROC AUC` est calculé uniquement si le modèle fournit un score continu (`predict_proba` ou `decision_function`). Sinon, la métrique est renvoyée à `np.nan`.
+    - La matrice de confusion est calculée sur les prédictions de validation agrégées sur l'ensemble des folds (out-of-fold).
     """
-    for name, model in models.items():
-        metrics = evaluate_regression_model_cv(model, X, y, cv=cv)
+    splitter = (
+        StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
+        if stratify
+        else KFold(n_splits=cv, shuffle=True, random_state=42)
+    )
 
-        print(f"\n{name}")
-        print(
-            f"Train | R²: {metrics['Train R2']:.4f} | "
-            f"MAPE: {metrics['Train MAPE (%)']:.2f}% | "
-            f"MAE: {metrics['Train MAE']:.4f} | "
-            f"RMSE: {metrics['Train RMSE']:.4f}"
-        )
-        print(
-            f"Test  | R²: {metrics['Test R2']:.4f} | "
-            f"MAPE: {metrics['Test MAPE (%)']:.2f}% | "
-            f"MAE: {metrics['Test MAE']:.4f} | "
-            f"RMSE: {metrics['Test RMSE']:.4f}"
-        )
+    accuracy_train, accuracy_test = [], []
+    precision_train, precision_test = [], []
+    recall_train, recall_test = [], []
+    f1_train, f1_test = [], []
+    roc_auc_train, roc_auc_test = [], []
+    y_true_oof = pd.Series(index=y.index, dtype=y.dtype)
+    y_pred_oof = pd.Series(index=y.index, dtype=y.dtype)
+
+    split_iterator = splitter.split(X, y) if stratify else splitter.split(X)
+
+    for train_idx, test_idx in split_iterator:
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        model.fit(X_train, y_train)
+
+        y_train_pred = model.predict(X_train)
+        y_test_pred = model.predict(X_test)
+        y_true_oof.iloc[test_idx] = y_test.to_numpy()
+        y_pred_oof.iloc[test_idx] = y_test_pred
+
+        accuracy_train.append(accuracy_score(y_train, y_train_pred))
+        accuracy_test.append(accuracy_score(y_test, y_test_pred))
+
+        precision_train.append(precision_score(y_train, y_train_pred, zero_division=0))
+        precision_test.append(precision_score(y_test, y_test_pred, zero_division=0))
+
+        recall_train.append(recall_score(y_train, y_train_pred, zero_division=0))
+        recall_test.append(recall_score(y_test, y_test_pred, zero_division=0))
+
+        f1_train.append(f1_score(y_train, y_train_pred, zero_division=0))
+        f1_test.append(f1_score(y_test, y_test_pred, zero_division=0))
+
+        train_scores = None
+        test_scores = None
+
+        if hasattr(model, "predict_proba"):
+            train_scores = model.predict_proba(X_train)[:, 1]
+            test_scores = model.predict_proba(X_test)[:, 1]
+        elif hasattr(model, "decision_function"):
+            train_scores = model.decision_function(X_train)
+            test_scores = model.decision_function(X_test)
+
+        if train_scores is not None and test_scores is not None:
+            roc_auc_train.append(roc_auc_score(y_train, train_scores))
+            roc_auc_test.append(roc_auc_score(y_test, test_scores))
+        else:
+            roc_auc_train.append(np.nan)
+            roc_auc_test.append(np.nan)
+
+    def _format_mean(values):
+        """
+        Calcule une moyenne et renvoie un float Python arrondi.
+
+        Si toutes les valeurs sont manquantes, la fonction renvoie `nan`.
+        """
+        valid_values = [value for value in values if not np.isnan(value)]
+        if not valid_values:
+            return float("nan")
+        return round(float(np.mean(valid_values)), 4)
+
+    metrics = {
+        "Train Accuracy": _format_mean(accuracy_train),
+        "Test Accuracy": _format_mean(accuracy_test),
+
+        "Train Precision": _format_mean(precision_train),
+        "Test Precision": _format_mean(precision_test),
+
+        "Train Recall": _format_mean(recall_train),
+        "Test Recall": _format_mean(recall_test),
+
+        "Train F1": _format_mean(f1_train),
+        "Test F1": _format_mean(f1_test),
+
+        "Train ROC AUC": _format_mean(roc_auc_train),
+        "Test ROC AUC": _format_mean(roc_auc_test),
+    }
+
+    if model_name is not None:
+        print(f"\n{model_name}")
+
+    print(
+        f"Train | Accuracy: {metrics['Train Accuracy']:.4f} | "
+        f"Precision: {metrics['Train Precision']:.4f} | "
+        f"Recall: {metrics['Train Recall']:.4f} | "
+        f"F1: {metrics['Train F1']:.4f} | "
+        f"ROC AUC: {metrics['Train ROC AUC']:.4f}"
+    )
+    print(
+        f"Test  | Accuracy: {metrics['Test Accuracy']:.4f} | "
+        f"Precision: {metrics['Test Precision']:.4f} | "
+        f"Recall: {metrics['Test Recall']:.4f} | "
+        f"F1: {metrics['Test F1']:.4f} | "
+        f"ROC AUC: {metrics['Test ROC AUC']:.4f}"
+    )
+
+    if show_confusion_matrix:
+        cm = confusion_matrix(y_true_oof, y_pred_oof)
+
+        if cm.shape == (2, 2):
+            labels = np.array(
+                [
+                    [f"Vrai negatif\n{cm[0, 0]}", f"Faux positif\n{cm[0, 1]}"],
+                    [f"Faux negatif\n{cm[1, 0]}", f"Vrai positif\n{cm[1, 1]}"],
+                ]
+            )
+
+            plt.figure(figsize=(6, 5))
+            sns.heatmap(
+                cm,
+                annot=labels,
+                fmt="",
+                cmap=cmap,
+                cbar=False,
+                xticklabels=["Prediction negative", "Prediction positive"],
+                yticklabels=["Reel negatif", "Reel positif"],
+            )
+            title = "Matrice de confusion agrégée (validation croisée)"
+            if model_name is not None:
+                title = f"{title} - {model_name}"
+            plt.title(title)
+            plt.xlabel("Prediction")
+            plt.ylabel("Reel")
+            plt.tight_layout()
+            plt.show()
+        else:
+            disp = ConfusionMatrixDisplay(
+                confusion_matrix=cm,
+                display_labels=np.unique(y_true_oof),
+            )
+            disp.plot(cmap=cmap, values_format="d")
+            title = "Matrice de confusion agrégée (validation croisée)"
+            if model_name is not None:
+                title = f"{title} - {model_name}"
+            plt.title(title)
+            plt.grid(False)
+            plt.show()
+
+    return metrics
