@@ -1,4 +1,6 @@
-﻿# Fonctions.py
+﻿#uv add numpy pandas scikit-learn matplotlib seaborn category-encoders scipy joblib tqdm
+
+# Fonctions.py
 import numpy as np
 import pandas as pd
 from IPython.display import Markdown, display
