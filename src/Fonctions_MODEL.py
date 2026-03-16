@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from time import perf_counter
 
 from sklearn.model_selection import (
     train_test_split,
@@ -332,6 +333,13 @@ def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,
         - "Test ROC AUC"
         - "Train ROC AUC Std"
         - "Test ROC AUC Std"
+        - "Train PR AUC"
+        - "Test PR AUC"
+        - "Train PR AUC Std"
+        - "Test PR AUC Std"
+        - "Execution Time Total (s)"
+        - "Execution Time Mean Fold (s)"
+        - "Execution Time Std Fold (s)"
 
     Affichage
     ---------
@@ -346,9 +354,9 @@ def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,
     -----
     - Les metriques `Precision`, `Recall` et `F1` sont calculees avec
       `zero_division=0`.
-    - Le score `ROC AUC` est calcule uniquement si le modele fournit un score
-      continu via `predict_proba` ou `decision_function`. Sinon, la metrique
-      est renvoyee a `np.nan`.
+    - Les scores `ROC AUC` et `PR AUC` sont calcules uniquement si le modele
+      fournit un score continu via `predict_proba` ou `decision_function`.
+      Sinon, ces metriques sont renvoyees a `np.nan`.
     - Les ecarts-types sont calcules a partir des metriques obtenues sur chaque
       fold, ce qui aide a evaluer la stabilite du modele.
     - La matrice de confusion et le `classification_report` sont calcules sur
@@ -365,19 +373,24 @@ def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,
     recall_train, recall_test = [], []
     f1_train, f1_test = [], []
     roc_auc_train, roc_auc_test = [], []
+    pr_auc_train, pr_auc_test = [], []
+    execution_times = []
     y_true_oof = pd.Series(index=y.index, dtype=y.dtype)
     y_pred_oof = pd.Series(index=y.index, dtype=y.dtype)
 
     split_iterator = splitter.split(X, y) if stratify else splitter.split(X)
+    total_start_time = perf_counter()
 
     for train_idx, test_idx in split_iterator:
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
+        fold_start_time = perf_counter()
         model.fit(X_train, y_train)
 
         y_train_pred = model.predict(X_train)
         y_test_pred = model.predict(X_test)
+        execution_times.append(perf_counter() - fold_start_time)
         y_true_oof.iloc[test_idx] = y_test.to_numpy()
         y_pred_oof.iloc[test_idx] = y_test_pred
 
@@ -406,9 +419,13 @@ def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,
         if train_scores is not None and test_scores is not None:
             roc_auc_train.append(roc_auc_score(y_train, train_scores))
             roc_auc_test.append(roc_auc_score(y_test, test_scores))
+            pr_auc_train.append(average_precision_score(y_train, train_scores))
+            pr_auc_test.append(average_precision_score(y_test, test_scores))
         else:
             roc_auc_train.append(np.nan)
             roc_auc_test.append(np.nan)
+            pr_auc_train.append(np.nan)
+            pr_auc_test.append(np.nan)
 
     def _format_mean(values):
         """
@@ -457,6 +474,14 @@ def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,
         "Test ROC AUC": _format_mean(roc_auc_test),
         "Train ROC AUC Std": _format_std(roc_auc_train),
         "Test ROC AUC Std": _format_std(roc_auc_test),
+
+        "Train PR AUC": _format_mean(pr_auc_train),
+        "Test PR AUC": _format_mean(pr_auc_test),
+        "Train PR AUC Std": _format_std(pr_auc_train),
+        "Test PR AUC Std": _format_std(pr_auc_test),
+        "Execution Time Total (s)": round(float(perf_counter() - total_start_time), 4),
+        "Execution Time Mean Fold (s)": _format_mean(execution_times),
+        "Execution Time Std Fold (s)": _format_std(execution_times),
     }
 
     if model_name is not None:
@@ -467,14 +492,21 @@ def evaluate_classification_model_cv(model,X,y,cv,stratify=True,model_name=None,
         f"Precision: {metrics['Train Precision']:.4f} +/- {metrics['Train Precision Std']:.4f} | "
         f"Recall: {metrics['Train Recall']:.4f} +/- {metrics['Train Recall Std']:.4f} | "
         f"F1: {metrics['Train F1']:.4f} +/- {metrics['Train F1 Std']:.4f} | "
-        f"ROC AUC: {metrics['Train ROC AUC']:.4f} +/- {metrics['Train ROC AUC Std']:.4f}"
+        f"ROC AUC: {metrics['Train ROC AUC']:.4f} +/- {metrics['Train ROC AUC Std']:.4f} | "
+        f"PR-AUC: {metrics['Train PR AUC']:.4f} +/- {metrics['Train PR AUC Std']:.4f}"
     )
     print(
         f"Test  | Accuracy: {metrics['Test Accuracy']:.4f} +/- {metrics['Test Accuracy Std']:.4f} | "
         f"Precision: {metrics['Test Precision']:.4f} +/- {metrics['Test Precision Std']:.4f} | "
         f"Recall: {metrics['Test Recall']:.4f} +/- {metrics['Test Recall Std']:.4f} | "
         f"F1: {metrics['Test F1']:.4f} +/- {metrics['Test F1 Std']:.4f} | "
-        f"ROC AUC: {metrics['Test ROC AUC']:.4f} +/- {metrics['Test ROC AUC Std']:.4f}"
+        f"ROC AUC: {metrics['Test ROC AUC']:.4f} +/- {metrics['Test ROC AUC Std']:.4f} | "
+        f"PR-AUC: {metrics['Test PR AUC']:.4f} +/- {metrics['Test PR AUC Std']:.4f}"
+    )
+    print(
+        f"Temps | Total CV: {metrics['Execution Time Total (s)']:.4f}s | "
+        f"Moyenne par fold: {metrics['Execution Time Mean Fold (s)']:.4f}s +/- "
+        f"{metrics['Execution Time Std Fold (s)']:.4f}s"
     )
     if show_confusion_matrix:
         class_labels = np.unique(y_true_oof)
@@ -587,7 +619,7 @@ def evaluate_precision_recall_threshold(
     -------
     dict
         Dictionnaire contenant :
-        - "Precision Moyenne"
+        - "PR AUC"
         - "Meilleur Seuil"
         - "Precision Test Au Meilleur Seuil"
         - "Recall Test Au Meilleur Seuil"
@@ -626,7 +658,7 @@ def evaluate_precision_recall_threshold(
     best_threshold = float(thresholds[best_idx])
 
     results = {
-        "Precision Moyenne": round(float(average_precision), 4),
+        "PR AUC": round(float(average_precision), 4),
         "Meilleur Seuil": round(best_threshold, 4),
         "Precision Test Au Meilleur Seuil": round(float(precision_for_thresholds[best_idx]), 4),
         "Recall Test Au Meilleur Seuil": round(float(recall_for_thresholds[best_idx]), 4),
@@ -637,7 +669,7 @@ def evaluate_precision_recall_threshold(
         print(f"\n{model_name}")
 
     print(
-        f"Precision moyenne : {results['Precision Moyenne']:.4f} | "
+        f"PR-AUC : {results['PR AUC']:.4f} | "
         f"Meilleur seuil (max F1) : {results['Meilleur Seuil']:.4f}"
     )
     print(
